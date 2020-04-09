@@ -165,6 +165,12 @@ class LambdaDeploymentPackager(object):
             chalice_init = chalice_init[:-1]
         zip_fileobj.write(chalice_init, 'chalice/__init__.py')
 
+        if libdir := self._osutils.joinpath(project_dir, "lib"):
+            for root, dirs, files in self._osutils.walk(libdir):
+                if self._osutils.basename(root) != "__pycache__":
+                    for file in files:
+                        zip_fileobj.write(self._osutils.joinpath(root, file), self._osutils.joinpath("lib", file))
+
         zip_fileobj.write(self._osutils.joinpath(project_dir, 'app.py'),
                           'app.py')
         self._add_chalice_lib_if_needed(project_dir, zip_fileobj)

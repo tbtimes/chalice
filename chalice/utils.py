@@ -192,6 +192,9 @@ class OSUtils(object):
         except OSError:
             pass
 
+    def basename(self, path):
+        return os.path.basename(path)
+
     def file_exists(self, filename):
         # type: (str) -> bool
         return os.path.isfile(filename)
