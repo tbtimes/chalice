@@ -190,6 +190,10 @@ class Chalice(DecoratorAPI):
                                     function_args: Dict[str, Any]) -> Response: ...
 
 
+class TBTChalice(Chalice):
+    pass
+
+
 class ChaliceAuthorizer(object):
     name = ... # type: str
     func = ... # type: _BUILTIN_AUTH_FUNC

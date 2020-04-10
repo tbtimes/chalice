@@ -1154,6 +1154,11 @@ class Chalice(_HandlerRegistration, DecoratorAPI):
                 response.headers[name] = value
 
 
+class TBTChalice(Chalice):
+    def __call__(self, event, context):
+        super().__call__(event, context)
+
+
 class BuiltinAuthConfig(object):
     def __init__(self, name, handler_string, ttl_seconds=None,
                  execution_role=None):
