@@ -658,6 +658,13 @@ class DecoratorAPI(object):
         return self._create_registration_function(
             handler_type='lambda_function', name=name)
 
+    def tbt_lambda_function(self, name=None, **kwargs):
+        return self._create_registration_function(
+            handler_type="tbt_lambda_function",
+            name=name,
+            registration_kwargs=kwargs
+        )
+
     def on_ws_connect(self, name=None):
         return self._create_registration_function(
             handler_type='on_ws_connect',
@@ -679,7 +686,7 @@ class DecoratorAPI(object):
             registration_kwargs={'route_key': '$default'},
         )
 
-    def _create_registration_function(self, handler_type, name=None,
+    def _create_registration_function(self, handler_type, name=None, channel=None,
                                       registration_kwargs=None):
         def _register_handler(user_handler):
             handler_name = name
@@ -1154,11 +1161,6 @@ class Chalice(_HandlerRegistration, DecoratorAPI):
                 response.headers[name] = value
 
 
-class TBTChalice(Chalice):
-    def __call__(self, event, context):
-        super().__call__(event, context)
-
-
 class BuiltinAuthConfig(object):
     def __init__(self, name, handler_string, ttl_seconds=None,
                  execution_role=None):
@@ -1310,6 +1312,17 @@ class LambdaFunction(object):
         self.func = func
         self.name = name
         self.handler_string = handler_string
+
+    def __call__(self, event, context):
+        return self.func(event, context)
+
+
+class TBTLambdaFunction(LambdaFunction):
+    def __init__(self, func, name, handler_string, channel):
+        if not channel:
+            raise ChaliceError()
+        super().__init__(func, name, handler_string)
+        self.channel = channel
 
     def __call__(self, event, context):
         return self.func(event, context)
@@ -1579,3 +1592,67 @@ class Blueprint(DecoratorAPI):
                 kwargs, options
             )
         )
+class TBTChalice(Chalice):
+    tbt_lambda_functions = {}
+
+    def _register_tbt_lambda_function(self, name, user_handler, handler_string, **kwargs):
+        wrapper = TBTLambdaFunction(
+            user_handler,
+            name=name,
+            handler_string=handler_string,
+            channel=kwargs.get("kwargs").get("channel")
+        )
+        self.tbt_lambda_functions[wrapper.channel] = wrapper
+
+    def _get_event_from_event(self, event):
+        pass
+
+    def __call__(self, event, context):
+        # return super().__call__(event, context)
+        rtype, rchan = event.get("routeKey").split(" ")
+        rchan = rchan[1:]
+        func = self.tbt_lambda_functions.get(rchan)
+        return func(event, context)
+
+        # Get channel
+        # Call func on channel
+        # {
+        #     "version": "2.0",
+        #     "routeKey": "ANY /api-covid-archiver",
+        #     "rawPath": "/archive",
+        #     "rawQueryString": "",
+        #     "headers": {
+        #         "accept": "*/*",
+        #         "accept-encoding": "gzip, deflate, br",
+        #         "cache-control": "no-cache",
+        #         "content-length": "151",
+        #         "content-type": "text/plain",
+        #         "host": "keumb35vp0.execute-api.us-east-1.amazonaws.com",
+        #         "postman-token": "97c0417f-21c5-47a4-aec5-82201c23defe",
+        #         "user-agent": "PostmanRuntime/7.24.0",
+        #         "x-amzn-trace-id": "Root=1-5e8b96af-542a214d13778f93a8175750",
+        #         "x-forwarded-for": "65.35.168.18",
+        #         "x-forwarded-port": "443",
+        #         "x-forwarded-proto": "https"
+        #     },
+        #     "requestContext": {
+        #         "accountId": "492856334679",
+        #         "apiId": "keumb35vp0",
+        #         "domainName": "keumb35vp0.execute-api.us-east-1.amazonaws.com",
+        #         "domainPrefix": "keumb35vp0",
+        #         "http": {
+        #             "method": "POST",
+        #             "path": "/api-covid-archiver",
+        #             "protocol": "HTTP/1.1",
+        #             "sourceIp": "65.35.168.18",
+        #             "userAgent": "PostmanRuntime/7.24.0"
+        #         },
+        #         "requestId": "KlR7bh1WoAMEPIg=",
+        #         "routeKey": "ANY /api-covid-archiver",
+        #         "stage": "$default",
+        #         "time": "06/Apr/2020:20:53:03 +0000",
+        #         "timeEpoch": 1586206383481
+        #     },
+        #     "body": "{\n\t\"status\": \"ArchiveSuccess\",\n\t\"source\": \"zip_cases\",\n\t\"payload\": null,\n\t\"channel\": \"https://keumb35vp0.execute-api.us-east-1.amazonaws.com/archive\"\n}",
+        #     "isBase64Encoded": False
+        # }
