@@ -6,5 +6,6 @@ from chalice.app import (
     UnprocessableEntityError, WebsocketDisconnectedError,
     AuthResponse, AuthRoute, Cron, Rate, __version__ as chalice_version
 )
+import chalice.tbt as tbt
 # We're reassigning version here to keep mypy happy.
 __version__ = chalice_version

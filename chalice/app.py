@@ -11,6 +11,9 @@ import base64
 from collections import defaultdict
 
 
+from chalice import tbt
+
+
 __version__ = '1.13.1'
 _PARAMS = re.compile(r'{\w+}')
 
@@ -1592,6 +1595,7 @@ class Blueprint(DecoratorAPI):
                 kwargs, options
             )
         )
+
 class TBTChalice(Chalice):
     tbt_lambda_functions = {}
 
@@ -1604,22 +1608,53 @@ class TBTChalice(Chalice):
         )
         self.tbt_lambda_functions[wrapper.channel] = wrapper
 
-    def _get_event_from_event(self, event):
-        pass
-
     def __call__(self, event, context):
         # return super().__call__(event, context)
-        rtype, rchan = event.get("routeKey").split(" ")
-        rchan = rchan[1:]
-        func = self.tbt_lambda_functions.get(rchan)
-        return func(event, context)
+        e = self._tbt_event_factory(event)
+        func = self.tbt_lambda_functions.get(e.channel)
+        # ctx = self._tbt_context_factory(event, context)
+        try:
+            res = func(e, context)
+        except tbt.ChaliceError:
+            print("chalice error")
+            return {
+                "statusCode": 500,
+                "message": "Internal Server Error"
+            }
+        except Exception as e:
+            print(e)
+            print(traceback.format_exc())
+            return {
+                "statusCode": 500,
+                "message": "Internal Server Error"
+            }
+        return res
+
+    def _tbt_event_factory(self, e):
+        if ctx := e.get("requestContext", None):
+            j = json.loads(e.get("body", None))
+            status = j.get("status", None)
+            args = {
+                "gateway": ctx.get("domainName", None),
+                "status": status,
+                "payload": j.get("payload", None),
+                "source": j.get("source", None),
+                "channel": http.get("path")[1:] if (http := ctx.get("http")) else None
+            }
+            if status == "ArchiveSuccess":
+                return tbt.ArchiveSuccess(**args)
+            if status == "PackBegin":
+                return tbt.PackBegin(**args)
+            if status == "PackWorkerBegin":
+                return tbt.PackWorkerBegin(**args)
+        return tbt.UnknownEvent()
 
         # Get channel
         # Call func on channel
         # {
         #     "version": "2.0",
-        #     "routeKey": "ANY /api-covid-archiver",
-        #     "rawPath": "/archive",
+        #     "routeKey": "ANY /archive-api",
+        #     "rawPath": "/archive-api",
         #     "rawQueryString": "",
         #     "headers": {
         #         "accept": "*/*",
@@ -1642,7 +1677,7 @@ class TBTChalice(Chalice):
         #         "domainPrefix": "keumb35vp0",
         #         "http": {
         #             "method": "POST",
-        #             "path": "/api-covid-archiver",
+        #             "path": "/archive-api",
         #             "protocol": "HTTP/1.1",
         #             "sourceIp": "65.35.168.18",
         #             "userAgent": "PostmanRuntime/7.24.0"
@@ -1654,5 +1689,79 @@ class TBTChalice(Chalice):
         #         "timeEpoch": 1586206383481
         #     },
         #     "body": "{\n\t\"status\": \"ArchiveSuccess\",\n\t\"source\": \"zip_cases\",\n\t\"payload\": null,\n\t\"channel\": \"https://keumb35vp0.execute-api.us-east-1.amazonaws.com/archive\"\n}",
-        #     "isBase64Encoded": False
+        #     "isBase64Encoded": false
         # }
+    # def __call__(self, event, context):
+    #     # This is what's invoked via lambda.
+    #     # Sometimes the event can be something that's not
+    #     # what we specified in our request_template mapping.
+    #     # When that happens, we want to give a better error message here.
+    #     resource_path = event.get('requestContext', {}).get('resourcePath')
+    #     if resource_path is None:
+    #         return error_response(error_code='InternalServerError',
+    #                               message='Unknown request.',
+    #                               http_status_code=500)
+    #     http_method = event['requestContext']['httpMethod']
+    #     if resource_path not in self.routes:
+    #         raise ChaliceError("No view function for: %s" % resource_path)
+    #     if http_method not in self.routes[resource_path]:
+    #         return error_response(
+    #             error_code='MethodNotAllowedError',
+    #             message='Unsupported method: %s' % http_method,
+    #             http_status_code=405)
+    #     route_entry = self.routes[resource_path][http_method]
+    #     view_function = route_entry.view_function
+    #     function_args = {name: event['pathParameters'][name]
+    #                      for name in route_entry.view_args}
+    #     self.lambda_context = context
+    #     self.current_request = Request(
+    #         event['multiValueQueryStringParameters'],
+    #         event['headers'],
+    #         event['pathParameters'],
+    #         event['requestContext']['httpMethod'],
+    #         event['body'],
+    #         event['requestContext'],
+    #         event['stageVariables'],
+    #         event.get('isBase64Encoded', False)
+    #     )
+    #     # We're getting the CORS headers before validation to be able to
+    #     # output desired headers with
+    #     cors_headers = None
+    #     if self._cors_enabled_for_route(route_entry):
+    #         cors_headers = self._get_cors_headers(route_entry.cors)
+    #     # We're doing the header validation after creating the request
+    #     # so can leverage the case insensitive dict that the Request class
+    #     # uses for headers.
+    #     if route_entry.content_types:
+    #         content_type = self.current_request.headers.get(
+    #             'content-type', 'application/json')
+    #         if not _matches_content_type(content_type,
+    #                                      route_entry.content_types):
+    #             return error_response(
+    #                 error_code='UnsupportedMediaType',
+    #                 message='Unsupported media type: %s' % content_type,
+    #                 http_status_code=415,
+    #                 headers=cors_headers
+    #             )
+    #     response = self._get_view_function_response(view_function,
+    #                                                 function_args)
+    #     if cors_headers is not None:
+    #         self._add_cors_headers(response, cors_headers)
+    #
+    #     response_headers = CaseInsensitiveMapping(response.headers)
+    #     if not self._validate_binary_response(
+    #             self.current_request.headers, response_headers):
+    #         content_type = response_headers.get('content-type', '')
+    #         return error_response(
+    #             error_code='BadRequest',
+    #             message=('Request did not specify an Accept header with %s, '
+    #                      'The response has a Content-Type of %s. If a '
+    #                      'response has a binary Content-Type then the request '
+    #                      'must specify an Accept header that matches.'
+    #                      % (content_type, content_type)),
+    #             http_status_code=400,
+    #             headers=cors_headers
+    #         )
+    #     response = response.to_dict(self.api.binary_types)
+    #     return response
+

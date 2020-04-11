@@ -253,7 +253,7 @@ def create_default_deployer(session, config, ui):
     client = TypedAWSClient(session)
     osutils = OSUtils()
     return Deployer(
-        application_builder=ApplicationGraphBuilder(),
+        application_builder=TBTApplicationGraphBuilder(),
         deps_builder=DependencyBuilder(),
         build_stage=create_build_stage(
             osutils, UI(), TemplatedSwaggerGenerator(),
@@ -814,6 +814,20 @@ class ApplicationGraphBuilder(object):
             lambda_function=lambda_function,
         )
         return sqs_event_source
+
+
+class TBTApplicationGraphBuilder(ApplicationGraphBuilder):
+    def build(self, config, stage_name):
+        app = super().build(config, stage_name)
+        deployment = models.DeploymentPackage(models.Placeholder.BUILD_STAGE)
+        if functions := config.chalice_app.tbt_lambda_functions:
+            for channel, function in functions.items():
+                resource = self._create_lambda_model(
+                    config=config, deployment=deployment,
+                    name=function.name, handler_name="app.app",
+                    stage_name=stage_name)
+                app.resources.append(resource)
+        return app
 
 
 class DependencyBuilder(object):
