@@ -101,6 +101,16 @@ class RemoteState(object):
         except ResourceDoesNotExistError:
             return False
 
+    def _resource_exists_tbtapi(self, resource):
+        try:
+            deployed_values = self._deployed_resources.resource_values(
+                resource.resource_name
+            )
+        except ValueError:
+            return False
+        rest_api_id = deployed_values["rest_api_id"]
+        return bool(self._client.get_rest_api(rest_api_id))
+
     def _resource_exists_restapi(self, resource):
         # type: (models.RestAPI) -> bool
         try:
@@ -972,6 +982,157 @@ class PlanStage(object):
             return Variable('%s_role_arn' % resource.role_name)
         # Make mypy happy.
         raise RuntimeError("Unknown resource type: %s" % resource)
+
+
+class TBTPlanStage(PlanStage):
+
+    def _plan_tbtlambdafunction(self, resource):
+        pass
+
+    def _plan_tbtapi(self, resource):
+        # type: (models.TBTAPI) -> Sequence[InstructionMsg]
+        # There's a set of shared instructions that are needed
+        # in both the update as well as the initial create case.
+        # That's what this shared_plan_premable is for.
+        all_plans = []
+        for channel, function in resource.tbt_funcs.items():
+            function_name = function.function_name
+            varname = '%s_lambda_arn' % function.resource_name
+            lambda_arn_var = Variable(varname)
+            # There's a set of shared instructions that are needed
+            # in both the update as well as the initial create case.
+            # That's what this shared_plan_premable is for.
+            shared_plan_preamble = [
+                # The various API gateway API calls need
+                # to know the region name and account id so
+                # we'll take care of that up front and store
+                # them in variables.
+                models.BuiltinFunction(
+                    'parse_arn',
+                    [lambda_arn_var],
+                    output_var='parsed_lambda_arn',
+                ),
+                models.JPSearch('account_id',
+                                input_var='parsed_lambda_arn',
+                                output_var='account_id'),
+                models.JPSearch('region',
+                                input_var='parsed_lambda_arn',
+                                output_var='region_name'),
+                # The swagger doc uses the 'api_handler_lambda_arn'
+                # var name so we need to make sure we populate this variable
+                # before importing the rest API.
+                models.CopyVariable(from_var=varname,
+                                    to_var='api_handler_lambda_arn'),
+            ]  # type: List[InstructionMsg]
+            # There's also a set of instructions that are needed
+            # at the end of deploying a rest API that apply to both
+            # the update and create case.
+            shared_plan_patch_ops = [{
+                'op': 'replace',
+                'path': '/minimumCompressionSize',
+                'value': resource.minimum_compression}
+            ]  # type: List[Dict]
+
+            shared_plan_epilogue = [
+                models.APICall(
+                    method_name='update_rest_api',
+                    params={
+                        'rest_api_id': Variable('rest_api_id'),
+                        'patch_operations': shared_plan_patch_ops
+                    }
+                ),
+                models.APICall(
+                    method_name='add_permission_for_apigateway',
+                    params={'function_name': function_name,
+                            'region_name': Variable('region_name'),
+                            'account_id': Variable('account_id'),
+                            'rest_api_id': Variable('rest_api_id')},
+                ),
+                models.APICall(
+                    method_name='deploy_rest_api',
+                    params={'rest_api_id': Variable('rest_api_id'),
+                            'api_gateway_stage': resource.api_gateway_stage},
+                ),
+                models.StoreValue(
+                    name='rest_api_url',
+                    value=StringFormat(
+                        'https://{rest_api_id}.execute-api.{region_name}'
+                        '.amazonaws.com/%s/' % resource.api_gateway_stage,
+                        ['rest_api_id', 'region_name'],
+                    ),
+                ),
+                models.RecordResourceVariable(
+                    resource_type='rest_api',
+                    resource_name=resource.resource_name,
+                    name='rest_api_url',
+                    variable_name='rest_api_url',
+                ),
+            ]  # type: List[InstructionMsg]
+
+            for auth in resource.authorizers:
+                shared_plan_epilogue.append(
+                    models.APICall(
+                        method_name='add_permission_for_apigateway',
+                        params={'function_name': auth.function_name,
+                                'region_name': Variable('region_name'),
+                                'account_id': Variable('account_id'),
+                                'rest_api_id': Variable('rest_api_id')},
+                    )
+                )
+            if not self._remote_state.resource_exists(resource):
+                plan = shared_plan_preamble + [
+                    (models.APICall(
+                        method_name='import_rest_api',
+                        params={'swagger_document': resource.swagger_doc,
+                                'endpoint_type': resource.endpoint_type},
+                        output_var='rest_api_id',
+                    ), "Creating Rest API\n"),
+                    models.RecordResourceVariable(
+                        resource_type='rest_api',
+                        resource_name=resource.resource_name,
+                        name='rest_api_id',
+                        variable_name='rest_api_id',
+                    ),
+                ]
+            else:
+                deployed = self._remote_state.resource_deployed_values(resource)
+                shared_plan_epilogue.insert(
+                    0,
+                    models.APICall(
+                        method_name='get_rest_api',
+                        params={'rest_api_id': Variable('rest_api_id')},
+                        output_var='rest_api')
+                )
+                shared_plan_patch_ops.append({
+                    'op': 'replace',
+                    'path': StringFormat(
+                        '/endpointConfiguration/types/%s' % (
+                            '{rest_api[endpointConfiguration][types][0]}'),
+                        ['rest_api']),
+                    'value': resource.endpoint_type}
+                )
+                plan = shared_plan_preamble + [
+                    models.StoreValue(
+                        name='rest_api_id',
+                        value=deployed['rest_api_id']),
+                    models.RecordResourceVariable(
+                        resource_type='rest_api',
+                        resource_name=resource.resource_name,
+                        name='rest_api_id',
+                        variable_name='rest_api_id',
+                    ),
+                    (models.APICall(
+                        method_name='update_api_from_swagger',
+                        params={
+                            'rest_api_id': Variable('rest_api_id'),
+                            'swagger_document': resource.swagger_doc,
+                        },
+                    ), "Updating rest API\n"),
+                ]
+        # for plan in all_plans:
+        #     print(plan)
+        # exit(1)
+        return all_plans
 
 
 class NoopPlanner(PlanStage):

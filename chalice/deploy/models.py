@@ -173,6 +173,29 @@ class LambdaFunction(ManagedModel):
 
 
 @attrs
+class TBTLambdaFunction(ManagedModel):
+    resource_type = 'tbt_lambda_function'
+    function_name = attrib()  # type: str
+    deployment_package = attrib()  # type: DeploymentPackage
+    environment_variables = attrib()  # type: StrMap
+    runtime = attrib()  # type: str
+    handler = attrib()  # type: str
+    tags = attrib()  # type: StrMap
+    timeout = attrib()  # type: int
+    memory_size = attrib()  # type: int
+    role = attrib()  # type: IAMRole
+    security_group_ids = attrib()  # type: List[str]
+    subnet_ids = attrib()  # type: List[str]
+    reserved_concurrency = attrib()  # type: int
+    layers = attrib()  # type: List[str]
+    channel = attrib()  # type: str
+
+    def dependencies(self):
+        # type: () -> List[Model]
+        return [self.role, self.deployment_package]
+
+
+@attrs
 class FunctionEventSubscriber(ManagedModel):
     lambda_function = attrib()  # type: LambdaFunction
 
@@ -213,6 +236,23 @@ class RestAPI(ManagedModel):
     def dependencies(self):
         # type: () -> List[Model]
         return cast(List[Model], [self.lambda_function] + self.authorizers)
+
+
+@attrs
+class TBTAPI(ManagedModel):
+    resource_type = 'tbt_api'
+    tbt_funcs = attrib()    # type: Dict[str, TBTLambdaFunction]
+    swagger_doc = attrib()  # type: DV[Dict[str, Any]]
+    minimum_compression = attrib()  # type: str
+    api_gateway_stage = attrib()  # type: str
+    endpoint_type = attrib()  # type: str
+    # lambda_function = attrib()  # type: LambdaFunction
+    policy = attrib(default=None)  # type: Optional[IAMPolicy]
+    authorizers = attrib(default=Factory(list))  # type: List[LambdaFunction]
+
+    def dependencies(self):
+        # type: () -> List[Model]
+        return cast(List[Model], [x for _, x in self.tbt_funcs.items()] + self.authorizers)
 
 
 @attrs

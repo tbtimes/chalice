@@ -110,27 +110,25 @@ from chalice.constants import LAMBDA_TRUST_POLICY
 from chalice.constants import SQS_EVENT_SOURCE_POLICY
 from chalice.constants import POST_TO_WEBSOCKET_CONNECTION_POLICY
 from chalice.deploy import models
-from chalice.deploy.executor import Executor
+from chalice.deploy.executor import Executor, TBTExecutor
 from chalice.deploy.packager import PipRunner
 from chalice.deploy.packager import SubprocessPip
 from chalice.deploy.packager import DependencyBuilder as PipDependencyBuilder
 from chalice.deploy.packager import LambdaDeploymentPackager
-from chalice.deploy.planner import PlanStage
+from chalice.deploy.planner import PlanStage, TBTPlanStage
 from chalice.deploy.planner import RemoteState
 from chalice.deploy.planner import NoopPlanner
 from chalice.deploy.swagger import TemplatedSwaggerGenerator
 from chalice.deploy.swagger import SwaggerGenerator  # noqa
-from chalice.deploy.sweeper import ResourceSweeper
+from chalice.deploy.sweeper import ResourceSweeper, TBTResourceSweeper
 from chalice.deploy.validate import validate_configuration
 from chalice.policy import AppPolicyGenerator
 from chalice.utils import OSUtils
 from chalice.utils import UI
 from chalice.utils import serialize_to_json
 
-
 OptStr = Optional[str]
 LOGGER = logging.getLogger(__name__)
-
 
 _AWSCLIENT_EXCEPTIONS = (
     botocore.exceptions.ClientError, AWSClientError
@@ -158,12 +156,12 @@ class ChaliceDeploymentError(Exception):
         where = 'While deploying your chalice application'
         if isinstance(error, LambdaClientError):
             where = (
-                'While sending your chalice handler code to Lambda to %s '
-                'function "%s"' % (
-                    self._get_verb_from_client_method(
-                        error.context.client_method_name),
-                    error.context.function_name
-                )
+                    'While sending your chalice handler code to Lambda to %s '
+                    'function "%s"' % (
+                        self._get_verb_from_client_method(
+                            error.context.client_method_name),
+                        error.context.function_name
+                    )
             )
         return where
 
@@ -211,12 +209,12 @@ class ChaliceDeploymentError(Exception):
             deployment_size = error.context.deployment_size
             if deployment_size > MAX_LAMBDA_DEPLOYMENT_SIZE:
                 size_warning = (
-                    'This is likely because the deployment package is %s. '
-                    'Lambda only allows deployment packages that are %s or '
-                    'less in size.' % (
-                        self._get_mb(deployment_size),
-                        self._get_mb(MAX_LAMBDA_DEPLOYMENT_SIZE)
-                    )
+                        'This is likely because the deployment package is %s. '
+                        'Lambda only allows deployment packages that are %s or '
+                        'less in size.' % (
+                            self._get_mb(deployment_size),
+                            self._get_mb(MAX_LAMBDA_DEPLOYMENT_SIZE)
+                        )
                 )
                 suggestion = size_warning + ' ' + suggestion
         return suggestion
@@ -253,7 +251,7 @@ def create_default_deployer(session, config, ui):
     client = TypedAWSClient(session)
     osutils = OSUtils()
     return Deployer(
-        application_builder=TBTApplicationGraphBuilder(),
+        application_builder=ApplicationGraphBuilder(),
         deps_builder=DependencyBuilder(),
         build_stage=create_build_stage(
             osutils, UI(), TemplatedSwaggerGenerator(),
@@ -267,6 +265,58 @@ def create_default_deployer(session, config, ui):
         recorder=ResultsRecorder(osutils=osutils),
     )
 
+def create_tbt_deployer(session, config, ui):
+    # type: (Session, Config, UI) -> Deployer
+    client = TypedAWSClient(session)
+    osutils = OSUtils()
+    print("creating tbt deployer")
+    return TBTDeployer(
+        application_builder=TBTApplicationGraphBuilder(),
+        deps_builder=DependencyBuilder(),
+        build_stage=create_tbt_build_stage(
+            osutils, UI(), TemplatedSwaggerGenerator(),
+        ),
+        plan_stage=TBTPlanStage(
+            osutils=osutils, remote_state=RemoteState(
+                client, config.deployed_resources(config.chalice_stage)),
+        ),
+        sweeper=TBTResourceSweeper(),
+        executor=TBTExecutor(client, ui),
+        recorder=ResultsRecorder(osutils=osutils),
+    )
+
+def create_tbt_build_stage(osutils, ui, swagger_gen):
+    # type: (OSUtils, UI, SwaggerGenerator) -> BuildStage
+    pip_runner = PipRunner(pip=SubprocessPip(osutils=osutils),
+                           osutils=osutils)
+    dependency_builder = PipDependencyBuilder(
+        osutils=osutils,
+        pip_runner=pip_runner
+    )
+    build_stage = BuildStage(
+        steps=[
+            InjectDefaults(),
+            DeploymentPackager(
+                packager=LambdaDeploymentPackager(
+                    osutils=osutils,
+                    dependency_builder=dependency_builder,
+                    ui=ui,
+                ),
+            ),
+            PolicyGenerator(
+                policy_gen=AppPolicyGenerator(
+                    osutils=osutils
+                ),
+                osutils=osutils,
+            ),
+            SwaggerBuilder(
+                swagger_generator=swagger_gen,
+            ),
+            LambdaEventSourcePolicyInjector(),
+            WebsocketPolicyInjector()
+        ],
+    )
+    return build_stage
 
 def create_build_stage(osutils, ui, swagger_gen):
     # type: (OSUtils, UI, SwaggerGenerator) -> BuildStage
@@ -320,12 +370,12 @@ class Deployer(object):
 
     def __init__(self,
                  application_builder,  # type: ApplicationGraphBuilder
-                 deps_builder,         # type: DependencyBuilder
-                 build_stage,          # type: BuildStage
-                 plan_stage,           # type: PlanStage
-                 sweeper,              # type: ResourceSweeper
-                 executor,             # type: Executor
-                 recorder,             # type: ResultsRecorder
+                 deps_builder,  # type: DependencyBuilder
+                 build_stage,  # type: BuildStage
+                 plan_stage,  # type: PlanStage
+                 sweeper,  # type: ResourceSweeper
+                 executor,  # type: Executor
+                 recorder,  # type: ResultsRecorder
                  ):
         # type: (...) -> None
         self._application_builder = application_builder
@@ -371,6 +421,10 @@ class Deployer(object):
             validate_configuration(config)
         except ValueError as e:
             raise ChaliceDeploymentError(e)
+
+
+class TBTDeployer(Deployer):
+    pass
 
 
 class ApplicationGraphBuilder(object):
@@ -438,9 +492,9 @@ class ApplicationGraphBuilder(object):
         return resources
 
     def _create_rest_api_model(self,
-                               config,        # type: Config
-                               deployment,    # type: models.DeploymentPackage
-                               stage_name,    # type: str
+                               config,  # type: Config
+                               deployment,  # type: models.DeploymentPackage
+                               stage_name,  # type: str
                                ):
         # type: (...) -> models.RestAPI
         # Need to mess with the function name for back-compat.
@@ -505,13 +559,13 @@ class ApplicationGraphBuilder(object):
 
     def _create_websocket_api_model(
             self,
-            config,      # type: Config
+            config,  # type: Config
             deployment,  # type: models.DeploymentPackage
             stage_name,  # type: str
     ):
         # type: (...) -> models.WebsocketAPI
-        connect_handler = None     # type: Optional[models.LambdaFunction]
-        message_handler = None     # type: Optional[models.LambdaFunction]
+        connect_handler = None  # type: Optional[models.LambdaFunction]
+        message_handler = None  # type: Optional[models.LambdaFunction]
         disconnect_handler = None  # type: Optional[models.LambdaFunction]
 
         routes = {h.route_key_handled: h.handler_string for h
@@ -548,10 +602,10 @@ class ApplicationGraphBuilder(object):
 
     def _create_cwe_subscription(
             self,
-            config,        # type: Config
-            deployment,    # type: models.DeploymentPackage
+            config,  # type: Config
+            deployment,  # type: models.DeploymentPackage
             event_source,  # type: app.CloudWatchEventConfig
-            stage_name,    # type: str
+            stage_name,  # type: str
     ):
         # type: (...) -> models.CloudWatchEvent
         lambda_function = self._create_lambda_model(
@@ -571,10 +625,10 @@ class ApplicationGraphBuilder(object):
         return cwe
 
     def _create_scheduled_model(self,
-                                config,        # type: Config
-                                deployment,    # type: models.DeploymentPackage
+                                config,  # type: Config
+                                deployment,  # type: models.DeploymentPackage
                                 event_source,  # type: app.ScheduledEventConfig
-                                stage_name,    # type: str
+                                stage_name,  # type: str
                                 ):
         # type: (...) -> models.ScheduledEvent
         lambda_function = self._create_lambda_model(
@@ -608,11 +662,11 @@ class ApplicationGraphBuilder(object):
         return scheduled_event
 
     def _create_lambda_model(self,
-                             config,        # type: Config
-                             deployment,    # type: models.DeploymentPackage
-                             name,          # type: str
+                             config,  # type: Config
+                             deployment,  # type: models.DeploymentPackage
+                             name,  # type: str
                              handler_name,  # type: str
-                             stage_name,    # type: str
+                             stage_name,  # type: str
                              ):
         # type: (...) -> models.LambdaFunction
         new_config = config.scope(
@@ -711,11 +765,11 @@ class ApplicationGraphBuilder(object):
         return layers if layers else []
 
     def _build_lambda_function(self,
-                               config,        # type: Config
-                               name,          # type: str
+                               config,  # type: Config
+                               name,  # type: str
                                handler_name,  # type: str
-                               deployment,    # type: models.DeploymentPackage
-                               role,          # type: models.IAMRole
+                               deployment,  # type: models.DeploymentPackage
+                               role,  # type: models.IAMRole
                                ):
         # type: (...) -> models.LambdaFunction
         function_name = '%s-%s-%s' % (
@@ -752,11 +806,11 @@ class ApplicationGraphBuilder(object):
             policy.traits.add(models.RoleTraits.VPC_NEEDED)
 
     def _create_bucket_notification(
-        self,
-        config,      # type: Config
-        deployment,  # type: models.DeploymentPackage
-        s3_event,    # type: app.S3EventConfig
-        stage_name,  # type: str
+            self,
+            config,  # type: Config
+            deployment,  # type: models.DeploymentPackage
+            s3_event,  # type: app.S3EventConfig
+            stage_name,  # type: str
     ):
         # type: (...) -> models.S3BucketNotification
         lambda_function = self._create_lambda_model(
@@ -775,11 +829,11 @@ class ApplicationGraphBuilder(object):
         return s3_bucket
 
     def _create_sns_subscription(
-        self,
-        config,      # type: Config
-        deployment,  # type: models.DeploymentPackage
-        sns_config,  # type: app.SNSEventConfig
-        stage_name,  # type: str
+            self,
+            config,  # type: Config
+            deployment,  # type: models.DeploymentPackage
+            sns_config,  # type: app.SNSEventConfig
+            stage_name,  # type: str
     ):
         # type: (...) -> models.SNSLambdaSubscription
         lambda_function = self._create_lambda_model(
@@ -795,11 +849,11 @@ class ApplicationGraphBuilder(object):
         return sns_subscription
 
     def _create_sqs_subscription(
-        self,
-        config,      # type: Config
-        deployment,  # type: models.DeploymentPackage
-        sqs_config,  # type: app.SQSEventConfig
-        stage_name,  # type: str
+            self,
+            config,  # type: Config
+            deployment,  # type: models.DeploymentPackage
+            sqs_config,  # type: app.SQSEventConfig
+            stage_name,  # type: str
     ):
         # type: (...) -> models.SQSEventSource
         lambda_function = self._create_lambda_model(
@@ -821,13 +875,124 @@ class TBTApplicationGraphBuilder(ApplicationGraphBuilder):
         app = super().build(config, stage_name)
         deployment = models.DeploymentPackage(models.Placeholder.BUILD_STAGE)
         if functions := config.chalice_app.tbt_lambda_functions:
-            for channel, function in functions.items():
-                resource = self._create_lambda_model(
-                    config=config, deployment=deployment,
-                    name=function.name, handler_name="app.app",
-                    stage_name=stage_name)
-                app.resources.append(resource)
+            app.resources.append(self._create_tbt_api_model(
+                config=config,
+                deployment=deployment,
+                stage_name=stage_name
+            ))
         return app
+
+    def _build_tbt_lambda_function(self,
+                                   config,  # type: Config
+                                   name,  # type: str
+                                   handler_name,  # type: str
+                                   deployment,  # type: models.DeploymentPackage
+                                   role,  # type: models.IAMRole
+                                   channel,  # type: str
+                                   ):
+        # type: (...) -> models.TBTLambdaFunction
+        function_name = '%s-%s-%s' % (
+            config.app_name, config.chalice_stage, name)
+        security_group_ids, subnet_ids = self._get_vpc_params(name, config)
+        lambda_layers = self._get_lambda_layers(config)
+        function = models.TBTLambdaFunction(
+            resource_name=name,
+            function_name=function_name,
+            environment_variables=config.environment_variables,
+            runtime=config.lambda_python_version,
+            handler=handler_name,
+            tags=config.tags,
+            timeout=config.lambda_timeout,
+            memory_size=config.lambda_memory_size,
+            deployment_package=deployment,
+            role=role,
+            security_group_ids=security_group_ids,
+            subnet_ids=subnet_ids,
+            reserved_concurrency=config.reserved_concurrency,
+            layers=lambda_layers,
+            channel=channel
+        )
+        self._inject_role_traits(function, role)
+        return function
+
+    def _create_tbt_lambda_model(self,
+                                 config,  # type: Config
+                                 deployment,  # type: models.DeploymentPackage
+                                 name,  # type: str
+                                 handler_name,  # type: str
+                                 stage_name,  # type: str
+                                 channel,  # type: str
+                                 ):
+        # type: (...) -> models.LambdaFunction
+        new_config = config.scope(
+            chalice_stage=config.chalice_stage,
+            function_name=name
+        )
+        role = self._get_role_reference(
+            new_config, stage_name, name)
+        resource = self._build_tbt_lambda_function(
+            new_config, name, handler_name,
+            deployment, role, channel
+        )
+        return resource
+
+    def _create_tbt_api_model(self,
+                              config,  # type: Config
+                              deployment,  # type: models.DeploymentPackage
+                              stage_name,  # type: str
+                              ):
+        # type: (...) -> models.TBTAPI
+        # Need to mess with the function name for back-compat.
+        functions = {}
+        for channel, function in config.chalice_app.tbt_lambda_functions.items():
+            functions[channel] = self._create_tbt_lambda_model(
+                config,
+                deployment=deployment,
+                handler_name="app.app",
+                name=function.name,
+                stage_name=stage_name,
+                channel=channel
+            )
+
+        # For backwards compatibility with the old deployer, the
+        # lambda function for the API handler doesn't have the
+        # resource_name appended to its complete function_name,
+        # it's just <app>-<stage>.
+        # function_name = '%s-%s' % (config.app_name, config.chalice_stage)
+        # lambda_function.function_name = function_name
+        if config.minimum_compression_size is None:
+            minimum_compression = ''
+        else:
+            minimum_compression = str(config.minimum_compression_size)
+        authorizers = []
+        # for auth in config.chalice_app.builtin_auth_handlers:
+        #     auth_lambda = self._create_lambda_model(
+        #         config=config, deployment=deployment, name=auth.name,
+        #         handler_name=auth.handler_string, stage_name=stage_name,
+        #     )
+        #     authorizers.append(auth_lambda)
+
+        policy = None
+        policy_path = config.api_gateway_policy_file
+        if (config.api_gateway_endpoint_type == 'PRIVATE' and not policy_path):
+            policy = models.IAMPolicy(
+                document=self._get_default_private_api_policy(config))
+        elif policy_path:
+            policy = models.FileBasedIAMPolicy(
+                document=models.Placeholder.BUILD_STAGE,
+                filename=os.path.join(
+                    config.project_dir, '.chalice', policy_path))
+
+        return models.TBTAPI(
+            resource_name='tbt_api',
+            swagger_doc=models.Placeholder.BUILD_STAGE,
+            endpoint_type=config.api_gateway_endpoint_type,
+            minimum_compression=minimum_compression,
+            api_gateway_stage=config.api_gateway_stage,
+            tbt_funcs=functions,
+            authorizers=authorizers,
+            policy=policy
+        )
 
 
 class DependencyBuilder(object):
@@ -917,10 +1082,10 @@ class LambdaEventSourcePolicyInjector(BaseDeployStep):
         # permission to call sqs.
         role = resource.lambda_function.role
         if (not self._policy_injected and
-            isinstance(role, models.ManagedIAMRole) and
-            isinstance(role.policy, models.AutoGenIAMPolicy) and
-            not isinstance(role.policy.document,
-                           models.Placeholder)):
+                isinstance(role, models.ManagedIAMRole) and
+                isinstance(role.policy, models.AutoGenIAMPolicy) and
+                not isinstance(role.policy.document,
+                               models.Placeholder)):
             self._inject_trigger_policy(role.policy.document,
                                         SQS_EVENT_SOURCE_POLICY.copy())
             self._policy_injected = True
@@ -949,10 +1114,10 @@ class WebsocketPolicyInjector(BaseDeployStep):
         if role is None:
             return
         if (not self._policy_injected and
-            isinstance(role, models.ManagedIAMRole) and
-            isinstance(role.policy, models.AutoGenIAMPolicy) and
-            not isinstance(role.policy.document,
-                           models.Placeholder)):
+                isinstance(role, models.ManagedIAMRole) and
+                isinstance(role.policy, models.AutoGenIAMPolicy) and
+                not isinstance(role.policy.document,
+                               models.Placeholder)):
             self._inject_policy(
                 role.policy.document,
                 POST_TO_WEBSOCKET_CONNECTION_POLICY.copy())

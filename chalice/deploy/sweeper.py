@@ -14,6 +14,13 @@ class ResourceSweeper(object):
         instructions = plan.instructions
         marked = self._mark_resources(instructions)
         deployed = config.deployed_resources(config.chalice_stage)
+        print("instructions")
+        print(instructions)
+        print("marked")
+        print(marked)
+        print("deployed")
+        print(deployed)
+        # exit()
         if deployed is not None:
             remaining = self._determine_remaining(plan, deployed, marked)
             self._plan_deletion(instructions, plan.messages,
@@ -24,6 +31,8 @@ class ResourceSweeper(object):
         remaining = []
         deployed_resource_names = reversed(deployed.resource_names())
         for name in deployed_resource_names:
+            print("Deployed resource")
+            print(name)
             resource_values = deployed.resource_values(name)
             if name not in marked:
                 remaining.append(name)
@@ -154,3 +163,64 @@ class ResourceSweeper(object):
                     "Deleting Websocket API: %s\n" %
                     resource_values['websocket_api_id']
                 )
+class TBTResourceSweeper(ResourceSweeper):
+
+    def execute(self, plan, config):
+        # type: (models.Plan, Config) -> None
+        instructions = plan.instructions
+        marked = self._mark_resources(instructions)
+        deployed = config.deployed_resources(config.chalice_stage)
+        print("instructions")
+        print(instructions)
+        print("marked")
+        print(marked)
+        print("deployed")
+        print(deployed)
+        # exit()
+        if deployed is not None:
+            remaining = self._determine_remaining(plan, deployed, marked)
+            self._plan_deletion(instructions, plan.messages,
+                                remaining, deployed)
+
+    def _determine_remaining(self, plan, deployed, marked):
+        # type: (models.Plan, DeployedResources, MarkedResource) -> List[str]
+        remaining = []
+        deployed_resource_names = reversed(deployed.resource_names())
+        for name in deployed_resource_names:
+            print("Deployed resource")
+            print(name)
+            resource_values = deployed.resource_values(name)
+            if name not in marked:
+                remaining.append(name)
+            elif resource_values['resource_type'] == 's3_event':
+                # Special case, we have to check the resource values
+                # to see if they've changed.  For s3 events, the resource
+                # name is not tied to the bucket, which means if you change
+                # the bucket, the resource name will stay the same.
+                # So we match up the bucket referenced in the instruction
+                # and the bucket recorded in the deployed values match up.
+                # If they don't then we need to clean up the bucket config
+                # referenced in the deployed values.
+                bucket = [instruction for instruction in marked[name]
+                          if instruction.name == 'bucket' and
+                          isinstance(instruction,
+                                     models.RecordResourceValue)][0]
+                if bucket.value != resource_values['bucket']:
+                    remaining.append(name)
+            elif resource_values['resource_type'] == 'sns_event':
+                existing_topic = resource_values['topic']
+                referenced_topic = [instruction for instruction in marked[name]
+                                    if instruction.name == 'topic' and
+                                    isinstance(instruction,
+                                               models.RecordResourceValue)][0]
+                if referenced_topic.value != existing_topic:
+                    remaining.append(name)
+            elif resource_values['resource_type'] == 'sqs_event':
+                existing_queue = resource_values['queue']
+                referenced_queue = [instruction for instruction in marked[name]
+                                    if instruction.name == 'queue' and
+                                    isinstance(instruction,
+                                               models.RecordResourceValue)][0]
+                if referenced_queue.value != existing_queue:
+                    remaining.append(name)
+        return remaining

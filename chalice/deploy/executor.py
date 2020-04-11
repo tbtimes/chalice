@@ -166,3 +166,7 @@ class UnresolvedValueError(Exception):
     def __str__(self):
         # type: () -> str
         return self.MSG % (self.key, self.value, self.method_name)
+
+
+class TBTExecutor(Executor):
+    pass

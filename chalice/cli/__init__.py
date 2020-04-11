@@ -207,6 +207,43 @@ def deploy(ctx, autogen_policy, profile, api_gateway_stage, stage,
     reporter.display_report(deployed_values)
 
 
+@cli.command()
+@click.option('--autogen-policy/--no-autogen-policy',
+              default=None,
+              help='Automatically generate IAM policy for app code.')
+@click.option('--profile', help='Override profile at deploy time.')
+@click.option('--api-gateway-stage',
+              help='Name of the API gateway stage to deploy to.')
+@click.option('--stage', default=DEFAULT_STAGE_NAME,
+              help=('Name of the Chalice stage to deploy to. '
+                    'Specifying a new chalice stage will create '
+                    'an entirely new set of AWS resources.'))
+@click.option('--connection-timeout',
+              type=int,
+              help=('Overrides the default botocore connection '
+                    'timeout.'))
+@click.pass_context
+def tbtdeploy(ctx, autogen_policy, profile, api_gateway_stage, stage,
+           connection_timeout):
+    # type: (click.Context, Optional[bool], str, str, str, int) -> None
+    factory = ctx.obj['factory']  # type: CLIFactory
+    factory.profile = profile
+
+    config = factory.create_config_obj(
+        chalice_stage_name=stage, autogen_policy=autogen_policy,
+        api_gateway_stage=api_gateway_stage,
+    )
+    session = factory.create_botocore_session(
+        connection_timeout=connection_timeout)
+    ui = UI()
+    d = factory.create_tbt_deployer(session=session,
+                                        config=config,
+                                        ui=ui)
+    deployed_values = d.deploy(config, chalice_stage_name=stage)
+    reporter = factory.create_deployment_reporter(ui=ui)
+    reporter.display_report(deployed_values)
+
+
 @cli.command('invoke')
 @click.option('-n', '--name', metavar='NAME', required=True,
               help=('The name of the function to invoke. '
