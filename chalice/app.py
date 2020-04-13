@@ -1641,7 +1641,7 @@ class TBTChalice(Chalice):
             j = json.loads(e.get("body", None))
             status = j.get("status", None)
             args = {
-                "gateway": ctx.get("domainName", None),
+                "gateway": os.environ["rest_api_url"],
                 "status": status,
                 "payload": j.get("payload", None),
                 "source": j.get("source", None),
