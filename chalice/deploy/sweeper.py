@@ -14,13 +14,6 @@ class ResourceSweeper(object):
         instructions = plan.instructions
         marked = self._mark_resources(instructions)
         deployed = config.deployed_resources(config.chalice_stage)
-        print("instructions")
-        print(instructions)
-        print("marked")
-        print(marked)
-        print("deployed")
-        print(deployed)
-        # exit()
         if deployed is not None:
             remaining = self._determine_remaining(plan, deployed, marked)
             self._plan_deletion(instructions, plan.messages,
@@ -31,8 +24,6 @@ class ResourceSweeper(object):
         remaining = []
         deployed_resource_names = reversed(deployed.resource_names())
         for name in deployed_resource_names:
-            print("Deployed resource")
-            print(name)
             resource_values = deployed.resource_values(name)
             if name not in marked:
                 remaining.append(name)
@@ -170,25 +161,29 @@ class TBTResourceSweeper(ResourceSweeper):
         instructions = plan.instructions
         marked = self._mark_resources(instructions)
         deployed = config.deployed_resources(config.chalice_stage)
-        print("instructions")
-        print(instructions)
-        print("marked")
-        print(marked)
-        print("deployed")
-        print(deployed)
-        # exit()
+        # print("instructions")
+        # for ins in instructions:
+        #     print(ins)
+        # print("marked")
+        # print(marked)
         if deployed is not None:
             remaining = self._determine_remaining(plan, deployed, marked)
             self._plan_deletion(instructions, plan.messages,
                                 remaining, deployed)
+
+    def _mark_resources(self, plan):  # type: (List[models.Instruction]) -> MarkedResource
+        marked = {}  # type: MarkedResource
+        for instruction in plan:
+            if isinstance(instruction, models.RecordResource):
+                marked.setdefault(instruction.resource_name, []).append(
+                    instruction)
+        return marked
 
     def _determine_remaining(self, plan, deployed, marked):
         # type: (models.Plan, DeployedResources, MarkedResource) -> List[str]
         remaining = []
         deployed_resource_names = reversed(deployed.resource_names())
         for name in deployed_resource_names:
-            print("Deployed resource")
-            print(name)
             resource_values = deployed.resource_values(name)
             if name not in marked:
                 remaining.append(name)

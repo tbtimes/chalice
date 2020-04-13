@@ -928,6 +928,11 @@ class _HandlerRegistration(object):
                         method, path, self.routes[path][method].view_name,
                         name)
                 )
+            print(user_handler)
+            print(name)
+            print(path)
+            print(method)
+            print(route_kwargs)
             entry = RouteEntry(user_handler, name, path, method,
                                **route_kwargs)
             self.routes[path][method] = entry
@@ -1615,8 +1620,9 @@ class TBTChalice(Chalice):
         # ctx = self._tbt_context_factory(event, context)
         try:
             res = func(e, context)
-        except tbt.ChaliceError:
-            print("chalice error")
+        except tbt.ChaliceError as e:
+            print(e)
+            print(traceback.format_exc())
             return {
                 "statusCode": 500,
                 "message": "Internal Server Error"

@@ -289,6 +289,61 @@ class TemplatedSwaggerGenerator(SwaggerGenerator):
         )
 
 
+class TBTSwaggerGenerator(SwaggerGenerator):
+    def __init__(self):
+        pass
+
+    def _uri(self, channel, lambda_arn=None):
+        # type: (Optional[str]) -> Any
+        return StringFormat(
+            'arn:aws:apigateway:{region_name}:lambda:path/2015-03-31'
+            f"/functions/{{{channel}_lambda_arn}}/invocations",
+            ['region_name', f"{channel}_lambda_arn"],
+        )
+
+    def _generate_apig_integ(self, view):
+        # type: (RouteEntry) -> Dict[str, Any]
+        apig_integ = {
+            'responses': {
+                'default': {
+                    'statusCode': "200",
+                }
+            },
+            'uri': self._uri(view.view_function.channel),
+            'passthroughBehavior': 'when_no_match',
+            'httpMethod': 'POST',
+            'contentHandling': 'CONVERT_TO_TEXT',
+            'type': 'aws_proxy',
+        }
+        return apig_integ
+
+    def _add_route_paths(self, api, app):
+        # type: (Dict[str, Any], Chalice) -> None
+        for channel, fn in app.tbt_lambda_functions.items():
+            path = "/" + channel
+            swagger_for_path = {}
+            api["paths"][path] = swagger_for_path
+            http_method = "POST"
+            view = RouteEntry(
+                view_function=fn,
+                view_name=fn.name,
+                path=path,
+                method=http_method,
+                content_types=["application/json"]
+            )
+            current = self._generate_route_method(view)
+            cors_config = None
+            if 'security' in current:
+                self._add_to_security_definition(current["security"], api, view)
+            swagger_for_path[http_method.lower()] = current
+            methods_with_cors = []
+            if view.cors is not None:
+                cors_config = view.cors
+                methods_with_cors.append(http_method)
+            if cors_config is not None:
+                self._add_preflight_request(cors_config, methods_with_cors, swagger_for_path)
+
+
 class TerraformSwaggerGenerator(SwaggerGenerator):
 
     def __init__(self):

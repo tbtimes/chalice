@@ -118,7 +118,7 @@ from chalice.deploy.packager import LambdaDeploymentPackager
 from chalice.deploy.planner import PlanStage, TBTPlanStage
 from chalice.deploy.planner import RemoteState
 from chalice.deploy.planner import NoopPlanner
-from chalice.deploy.swagger import TemplatedSwaggerGenerator
+from chalice.deploy.swagger import TemplatedSwaggerGenerator, TBTSwaggerGenerator
 from chalice.deploy.swagger import SwaggerGenerator  # noqa
 from chalice.deploy.sweeper import ResourceSweeper, TBTResourceSweeper
 from chalice.deploy.validate import validate_configuration
@@ -269,12 +269,11 @@ def create_tbt_deployer(session, config, ui):
     # type: (Session, Config, UI) -> Deployer
     client = TypedAWSClient(session)
     osutils = OSUtils()
-    print("creating tbt deployer")
     return TBTDeployer(
         application_builder=TBTApplicationGraphBuilder(),
         deps_builder=DependencyBuilder(),
         build_stage=create_tbt_build_stage(
-            osutils, UI(), TemplatedSwaggerGenerator(),
+            osutils, UI(), TBTSwaggerGenerator(),
         ),
         plan_stage=TBTPlanStage(
             osutils=osutils, remote_state=RemoteState(
@@ -424,7 +423,28 @@ class Deployer(object):
 
 
 class TBTDeployer(Deployer):
-    pass
+
+    def _deploy(self, config, chalice_stage_name):
+        # type: (Config, str) -> Dict[str, Any]
+        self._validate_config(config)
+        application = self._application_builder.build(
+            config, chalice_stage_name)
+        resources = self._deps_builder.build_dependencies(application)
+        self._build_stage.execute(config, resources)
+        plan = self._plan_stage.execute(resources)
+        self._sweeper.execute(plan, config)
+        self._executor.execute(plan)
+        deployed_values = {
+            'resources': self._executor.resource_values,
+            'schema_version': '2.0',
+            'backend': self.BACKEND_NAME,
+        }
+        self._recorder.record_results(
+            deployed_values,
+            chalice_stage_name,
+            config.project_dir,
+        )
+        return deployed_values
 
 
 class ApplicationGraphBuilder(object):
@@ -1067,6 +1087,12 @@ class SwaggerBuilder(BaseDeployStep):
         # type: (Config, models.RestAPI) -> None
         swagger_doc = self._swagger_generator.generate_swagger(
             config.chalice_app, resource)
+        resource.swagger_doc = swagger_doc
+
+    def handle_tbtapi(self, config, resource):
+        swagger_doc = self._swagger_generator.generate_swagger(
+            config.chalice_app, resource
+        )
         resource.swagger_doc = swagger_doc
 
 

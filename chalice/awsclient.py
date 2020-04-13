@@ -269,6 +269,7 @@ class TypedAWSClient(object):
         is not provided, no changes will be made for that that parameter on
         the targeted lambda function.
         """
+
         return_value = self._update_function_code(function_name=function_name,
                                                   zip_contents=zip_contents)
         self._update_function_config(
@@ -1080,7 +1081,7 @@ class TypedAWSClient(object):
         )['IntegrationId']
 
     def create_websocket_route(self, api_id, route_key, integration_id):
-        # type: (str, str, str, ) -> None
+        # type: (str, str, str ) -> None
         client = self._client('apigatewayv2')
         client.create_route(
             ApiId=api_id,
